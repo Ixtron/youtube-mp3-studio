@@ -53,8 +53,17 @@ try {
     $rejected = $false
     try { & $installer } catch { $rejected = $_.Exception.Message -like '*Checksum mismatch*' }
     if (-not $rejected -or $global:youtubeInstallerTest_launches -ne 2) { throw 'Invalid checksum was not rejected' }
+    $global:youtubeInstallerTest_corrupt = $false
+    $global:youtubeInstallerTest_tag = 'v4.0.2'
+    # A valid application ZIP must not make a corrupt downloaded component executable.
+    Remove-Item -LiteralPath (Join-Path $source 'node.exe')
+    Compress-Archive -Path (Join-Path $source '*') -DestinationPath $global:youtubeInstallerTest_fixture -Force
+    $global:youtubeInstallerTest_hash = (Get-FileHash -LiteralPath $global:youtubeInstallerTest_fixture -Algorithm SHA256).Hash
+    $rejected = $false
+    try { & $installer } catch { $rejected = $_.Exception.Message -like '*Component checksum mismatch*' }
+    if (-not $rejected -or $global:youtubeInstallerTest_launches -ne 2) { throw 'Corrupt component was not rejected' }
     if ((Get-Content -LiteralPath $sentinel) -ne 'PRIVATE TEST DATA') { throw 'Private data modified' }
-    Write-Host 'PASS: first install, cached launch, checksum rejection, private data preservation.'
+    Write-Host 'PASS: first install, cached launch, ZIP and component checksum rejection, private data preservation.'
 } finally {
     $env:LOCALAPPDATA = $originalData
     $resolved = [IO.Path]::GetFullPath($testRoot)
