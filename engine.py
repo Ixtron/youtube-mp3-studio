@@ -81,7 +81,8 @@ class Worker:
                 raise Cancelled('Остановлено')
 
     def debug(self, message):
-        pass
+        # yt-dlp also calls the logger while reading playlist pages / waiting.
+        self.checkpoint()
 
     def warning(self, message):
         self.emit('log', 'Предупреждение: ' + message)
@@ -92,20 +93,26 @@ class Worker:
 
     def progress(self, data):
         self.checkpoint()
+        info = data.get('info_dict', {})
+        if info.get('title'):
+            self.emit('title', info['title'])
         if data['status'] == 'downloading':
             total = data.get('total_bytes') or data.get('total_bytes_estimate') or 0
             self.emit('progress', {
-                'fraction': data.get('downloaded_bytes', 0) / total if total else 0,
-                'title': data.get('info_dict', {}).get('title', 'Загрузка'),
+                'fraction': data.get('downloaded_bytes', 0) / total if total else None,
+                'downloaded': data.get('downloaded_bytes', 0), 'total': total,
+                'estimated': not data.get('total_bytes') and bool(total),
                 'speed': data.get('speed') or 0, 'eta': data.get('eta'),
             })
         elif data['status'] == 'finished':
-            self.emit('status', 'Обработка аудио…')
+            self.emit('phase', 'Обработка аудио…')
 
     def postprocess(self, data):
         self.checkpoint()
         if data['status'] == 'started':
-            self.emit('status', 'Обработка аудио и метаданных…')
+            phases = {'ExtractAudio': 'Преобразование аудио…',
+                      'Metadata': 'Запись метаданных…', 'EmbedThumbnail': 'Добавление обложки…'}
+            self.emit('phase', phases.get(data.get('postprocessor'), 'Обработка аудио…'))
 
     def options(self):
         settings = self.settings
@@ -155,29 +162,100 @@ class Worker:
         options['download_archive'] = ids
         return options
 
+    def entries(self, job, options):
+        if not job['playlist']:
+            return [{'url': job['url']}]
+        self.emit('phase', 'Чтение списка песен…')
+        # Enumerate once without the archive: existing tracks must stay in the total.
+        scan = dict(options, extract_flat='in_playlist', skip_download=True,
+                    download_archive=None, postprocessors=[], progress_hooks=[],
+                    postprocessor_hooks=[], writethumbnail=False, noplaylist=False)
+        with YoutubeDL(scan) as reader:
+            info = reader.extract_info(job['url'], download=False)
+        self.checkpoint()
+        if info is None or self.current_errors:
+            raise ValueError('Не удалось прочитать список песен. Попробуй повторить ссылку.')
+        if 'entries' not in info:
+            return [{'url': job['url'], 'title': info.get('title')}]
+        entries = []
+        for entry in info['entries']:
+            self.checkpoint()
+            entries.append(entry)
+        return entries
+
+    def emit_overall(self):
+        self.emit('overall', dict(self.tally))
+
+    def download_entry(self, downloader, entry):
+        self.checkpoint()
+        if not entry:
+            raise ValueError('Недоступная запись плейлиста.')
+        if downloader.in_download_archive(entry):
+            return 'skipped'
+        url = entry.get('webpage_url') or entry.get('url')
+        if not url or not validate_url(url):
+            raise ValueError('У записи нет доступной ссылки YouTube.')
+        before = self.completed
+        self.current_errors = 0
+        downloader.extract_info(url, download=True)
+        self.checkpoint()
+        if self.current_errors:
+            return 'errors'
+        # An archive match can also be detected inside extract_info for single URLs.
+        return 'saved' if self.completed > before else 'skipped'
+
     def run(self):
+        skipped = track_errors = 0
         try:
             Path(self.settings['folder']).mkdir(parents=True, exist_ok=True)
             for index, job in enumerate(self.jobs):
                 self.checkpoint()
-                self.emit('job', (job['id'], 'Загрузка'))
-                self.emit('status', f'Ссылка {index + 1} из {len(self.jobs)}')
+                self.tally = dict(job_id=job['id'], job_index=index + 1, jobs=len(self.jobs),
+                                  playlist=job['playlist'], total=None, processed=0,
+                                  saved=0, skipped=0, errors=0, current=0)
+                self.emit_overall()
+                self.emit('title', '')
+                self.emit('phase', 'Подготовка…')
                 self.current_errors = 0
-                before = self.completed
                 try:
                     options = self.options()
-                    options['noplaylist'] = not job['playlist']
+                    entries = self.entries(job, options)
+                    self.tally['total'] = len(entries)
+                    self.emit_overall()
+                    # We own the item loop so skips, errors and totals stay explicit.
+                    options['noplaylist'] = True
                     with YoutubeDL(options) as downloader:
                         downloader.add_post_processor(Completed(self), when='after_move')
-                        result = downloader.download([job['url']])
+                        for position, entry in enumerate(entries, 1):
+                            self.checkpoint()
+                            self.tally['current'] = position
+                            self.emit_overall()
+                            self.emit('title', (entry or {}).get('title') or 'Получаем название…')
+                            self.emit('phase', 'Получение информации о песне…')
+                            try:
+                                outcome = self.download_entry(downloader, entry)
+                            except Cancelled:
+                                raise
+                            except Exception as error:
+                                if self.stop.is_set():
+                                    raise Cancelled() from error
+                                self.emit('log', str(error))
+                                outcome = 'errors'
+                            self.tally[outcome] += 1
+                            self.tally['processed'] += 1
+                            skipped += outcome == 'skipped'
+                            track_errors += outcome == 'errors'
+                            self.emit_overall()
+                            self.emit('phase', {'saved': 'Сохранено', 'skipped': 'Уже есть в библиотеке',
+                                                'errors': 'Ошибка загрузки'}[outcome])
                     self.checkpoint()
-                    if result or self.current_errors:
+                    if self.tally['errors']:
                         self.errors += 1
                         self.failed.append(job)
-                        self.emit('job', (job['id'], 'Ошибка'))
-                    else:
-                        label = 'Готово' if self.completed > before else 'Уже скачано / нет доступных треков'
-                        self.emit('job', (job['id'], label))
+                    self.emit('job', (job['id'],
+                        f"{'Завершено с ошибками' if self.tally['errors'] else 'Готово'} · "
+                        f"скачано {self.tally['saved']} · уже были {self.tally['skipped']} · "
+                        f"ошибок {self.tally['errors']}"))
                 except Cancelled:
                     self.emit('job', (job['id'], 'Остановлено'))
                     raise
@@ -196,4 +274,5 @@ class Worker:
             self.emit('log', str(error))
         finally:
             self.emit('done', {'completed': self.completed, 'errors': self.errors,
+                               'skipped': skipped, 'track_errors': track_errors,
                                'stopped': self.stop.is_set(), 'failed': self.failed})

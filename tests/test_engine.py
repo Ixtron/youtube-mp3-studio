@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from engine import Worker, Completed, Cancelled, validate_url, playlist_url, existing_video_id
 from mutagen.id3 import ID3, WXXX
@@ -83,11 +83,90 @@ class EngineTests(unittest.TestCase):
         job = dict(id='test', url='https://youtu.be/abcdefghijk', playlist=False)
         self.worker.jobs = [job]
         with patch.object(self.worker, 'options', return_value={}), patch('engine.YoutubeDL') as downloader:
-            downloader.return_value.__enter__.return_value.download.return_value = 1
+            instance = downloader.return_value.__enter__.return_value
+            instance.in_download_archive.return_value = False
+            instance.extract_info.side_effect = lambda *a, **k: self.worker.error('Unavailable')
             self.worker.run()
         result = list(self.events.queue)[-1][1]
         self.assertEqual(result['errors'], 1)
         self.assertEqual(result['failed'], [job])
+
+    def test_playlist_counts_saved_existing_and_failed_tracks_separately(self):
+        job = dict(id='playlist', url='https://youtube.com/playlist?list=test', playlist=True)
+        self.worker.jobs = [job]
+        entries = [dict(id=str(i), url=f'https://youtu.be/{i:011}', title=f'Track {i}') for i in range(4)]
+        reader, downloader = Mock(), Mock()
+        reader.extract_info.return_value = {'entries': entries}
+        downloader.in_download_archive.side_effect = lambda entry: entry['id'] == '1'
+        def download(url, download):
+            if url.endswith('2'):
+                self.worker.error('Unavailable')
+            else:
+                self.worker.progress({'status': 'finished'})
+                # No completed item is counted while FFmpeg is still running.
+                self.assertEqual(self.worker.tally['processed'], int(url[-1]))
+                Completed(self.worker).run({'title': 'Track'})
+        downloader.extract_info.side_effect = download
+        factory = Mock(side_effect=[reader, downloader])
+        reader.__enter__ = Mock(return_value=reader)
+        reader.__exit__ = Mock(return_value=False)
+        downloader.__enter__ = Mock(return_value=downloader)
+        downloader.__exit__ = Mock(return_value=False)
+        with patch.object(self.worker, 'options', return_value={'download_archive': {'youtube 1'}}), patch('engine.YoutubeDL', factory):
+            self.worker.run()
+        events = list(self.events.queue)
+        counts = [v for kind, v in events if kind == 'overall']
+        self.assertEqual(counts[-1]['total'], 4)
+        self.assertEqual(counts[-1]['processed'], 4)
+        self.assertEqual((counts[-1]['saved'], counts[-1]['skipped'], counts[-1]['errors']), (2, 1, 1))
+        self.assertEqual([v['processed'] for v in counts if v['total'] == 4], [0, 0, 1, 1, 2, 2, 3, 3, 4])
+        result = events[-1][1]
+        self.assertEqual((result['completed'], result['skipped'], result['track_errors']), (2, 1, 1))
+        self.assertEqual(result['failed'], [job])
+        self.assertIsNone(factory.call_args_list[0].args[0]['download_archive'])
+
+    def test_playlist_scan_failure_does_not_report_empty_success(self):
+        self.worker.jobs = [dict(id='p', url='https://youtube.com/playlist?list=test', playlist=True)]
+        with patch.object(self.worker, 'options', return_value={}), patch('engine.YoutubeDL') as factory:
+            factory.return_value.__enter__.return_value.extract_info.return_value = None
+            self.worker.run()
+        result = list(self.events.queue)[-1][1]
+        self.assertEqual(result['errors'], 1)
+        self.assertEqual(result['completed'], 0)
+
+    def test_unknown_file_size_is_not_reported_as_zero_percent(self):
+        self.worker.progress({'status': 'downloading', 'downloaded_bytes': 1000})
+        progress = [v for kind, v in self.events.queue if kind == 'progress'][-1]
+        self.assertIsNone(progress['fraction'])
+        self.assertEqual(progress['downloaded'], 1000)
+
+    def test_stop_during_processing_keeps_current_track_unfinished(self):
+        job = dict(id='video', url='https://youtu.be/abcdefghijk', playlist=False)
+        self.worker.jobs = [job]
+        with patch.object(self.worker, 'options', return_value={}), patch('engine.YoutubeDL') as factory:
+            downloader = factory.return_value.__enter__.return_value
+            downloader.in_download_archive.return_value = False
+            def download(*a, **k):
+                self.worker.progress({'status': 'finished'})
+                self.worker.stop.set()
+                Completed(self.worker).run({'title': 'Track'})
+            downloader.extract_info.side_effect = download
+            self.worker.run()
+        result = list(self.events.queue)[-1][1]
+        self.assertTrue(result['stopped'])
+        self.assertEqual(result['completed'], 0)
+        self.assertEqual(self.worker.tally['processed'], 0)
+
+    def test_new_queue_link_resets_playlist_counts(self):
+        self.worker.jobs = [dict(id=str(i), url=f'https://youtu.be/{i:011}', playlist=False) for i in range(2)]
+        with patch.object(self.worker, 'options', return_value={}), patch('engine.YoutubeDL') as factory:
+            downloader = factory.return_value.__enter__.return_value
+            downloader.in_download_archive.return_value = True
+            self.worker.run()
+        starts = [v for kind, v in self.events.queue if kind == 'overall' and v['total'] is None]
+        self.assertEqual([v['job_index'] for v in starts], [1, 2])
+        self.assertTrue(all(v['processed'] == v['skipped'] == 0 for v in starts))
+        self.assertEqual(list(self.events.queue)[-1][1]['skipped'], 2)
 
     def test_directory_failure_is_reported(self):
         file = Path(self.directory.name) / 'not-a-directory'

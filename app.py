@@ -33,7 +33,12 @@ class App(ctk.CTk):
         self.jobs, self.rows, self.failed = [], {}, []
         self.worker = self.thread = self.login_process = None
         self.saved = read_settings()
+        self.current_track = ''
+        self.phase = 'Готов к загрузке'
+        self.last_overall = None
         self.build()
+        self.bind_class('StudioShortcuts', '<Control-KeyPress>', self.edit_shortcut)
+        self.install_shortcuts(self)
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(100, self.poll)
 
@@ -53,27 +58,27 @@ class App(ctk.CTk):
         self.grid_columnconfigure(1, minsize=290)
         self.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(self, fg_color='transparent')
-        header.grid(row=0, column=0, columnspan=2, sticky='ew', padx=28, pady=(24, 20))
+        header.grid(row=0, column=0, columnspan=2, sticky='ew', padx=28, pady=(18, 12))
         self.label(header, '◉', 38, ACCENT).pack(side='left', padx=(0, 14))
         titles = ctk.CTkFrame(header, fg_color='transparent')
         titles.pack(side='left')
         self.label(titles, 'YouTube MP3', 25, bold=True, anchor='w').pack(anchor='w')
         self.label(titles, 'Твоя музыка. В твоей библиотеке.', 13, MUTED).pack(anchor='w')
-        self.label(header, 'STUDIO  /  4.0 preview', 12, MUTED).pack(side='right')
+        self.label(header, 'STUDIO  /  4.0 preview 2', 12, MUTED).pack(side='right')
 
         main = ctk.CTkFrame(self, fg_color='transparent')
         main.grid(row=1, column=0, sticky='nsew', padx=(28, 18), pady=(0, 20))
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(2, weight=1)
+        main.grid_rowconfigure(2, weight=1, minsize=112)
         source = ctk.CTkFrame(main, fg_color=CARD, corner_radius=18)
         source.grid(row=0, column=0, sticky='ew')
-        self.label(source, 'Что будем слушать?', 22, bold=True).pack(anchor='w', padx=22, pady=(18, 2))
+        self.label(source, 'Что будем слушать?', 22, bold=True).pack(anchor='w', padx=22, pady=(14, 2))
         self.label(source, 'Добавь ссылки на видео или плейлисты — по одной на строку.', 13, MUTED).pack(anchor='w', padx=22)
-        self.urls = ctk.CTkTextbox(source, height=84, fg_color=FIELD, border_color=LINE,
-                                  border_width=1, corner_radius=10, font=('Segoe UI', 14))
-        self.urls.pack(fill='x', padx=22, pady=14)
+        self.urls = ctk.CTkTextbox(source, height=72, fg_color=FIELD, border_color=LINE,
+                                  border_width=1, corner_radius=10, font=('Segoe UI', 14), undo=True)
+        self.urls.pack(fill='x', padx=22, pady=10)
         controls = ctk.CTkFrame(source, fg_color='transparent')
-        controls.pack(fill='x', padx=22, pady=(0, 18))
+        controls.pack(fill='x', padx=22, pady=(0, 14))
         self.button(controls, 'Вставить', self.paste, width=95).pack(side='left')
         self.mode = ctk.StringVar(value='Авто')
         ctk.CTkOptionMenu(controls, values=['Авто', 'Одно видео', 'Плейлист'], variable=self.mode,
@@ -82,11 +87,12 @@ class App(ctk.CTk):
         self.add_button.pack(side='right')
 
         queue_header = ctk.CTkFrame(main, fg_color='transparent')
-        queue_header.grid(row=1, column=0, sticky='ew', pady=(18, 8))
+        queue_header.grid(row=1, column=0, sticky='ew', pady=(12, 6))
         self.count = self.label(queue_header, 'Очередь  ·  0', 16, bold=True)
         self.count.pack(side='left')
         self.clear_button = self.button(queue_header, 'Очистить', self.clear_jobs, width=90)
         self.clear_button.pack(side='right')
+        self.button(queue_header, 'Журнал', self.open_log, width=85).pack(side='right', padx=8)
         self.queue_view = ctk.CTkScrollableFrame(main, fg_color=CARD, corner_radius=14, height=160)
         self.queue_view.grid(row=2, column=0, sticky='nsew')
         self.empty = self.label(self.queue_view, 'Здесь появится твоя следующая подборка.\nДобавь первую ссылку выше.', 15, MUTED)
@@ -94,13 +100,22 @@ class App(ctk.CTk):
 
         progress = ctk.CTkFrame(main, fg_color=CARD, corner_radius=14)
         progress.grid(row=3, column=0, sticky='ew', pady=(14, 0))
-        self.status = self.label(progress, 'Готов к загрузке', 15, bold=True, anchor='w')
-        self.status.pack(fill='x', padx=18, pady=(12, 3))
-        self.detail = self.label(progress, 'Выбери музыку — остальное сделаем за тебя.', 12, MUTED, anchor='w')
+        self.overall = self.label(progress, 'Прогресс песен', 15, bold=True, anchor='w', height=22)
+        self.overall.pack(fill='x', padx=18, pady=(12, 0))
+        self.totals = self.label(progress, 'Скачано: 0  ·  Уже были: 0  ·  Ошибки: 0', 12, MUTED, anchor='w', height=20)
+        self.totals.pack(fill='x', padx=18)
+        self.overall_bar = ctk.CTkProgressBar(progress, progress_color=ACCENT, fg_color=LINE, height=6)
+        self.overall_bar.pack(fill='x', padx=18, pady=(7, 10))
+        self.overall_bar.set(0)
+        self.status = self.label(progress, 'Готов к загрузке', 15, bold=True, anchor='w', height=22)
+        self.status.pack(fill='x', padx=18, pady=(0, 0))
+        self.detail = self.label(progress, 'Выбери музыку — остальное сделаем за тебя.', 12, MUTED, anchor='w', height=20)
         self.detail.pack(fill='x', padx=18)
         self.bar = ctk.CTkProgressBar(progress, progress_color=ACCENT, fg_color=LINE, height=6)
-        self.bar.pack(fill='x', padx=18, pady=12)
+        self.bar.pack(fill='x', padx=18, pady=(7, 2))
         self.bar.set(0)
+        self.transfer = self.label(progress, 'Процент относится к текущему файлу.', 11, MUTED, anchor='w', height=20)
+        self.transfer.pack(fill='x', padx=18, pady=(0, 8))
         actions = ctk.CTkFrame(progress, fg_color='transparent')
         actions.pack(fill='x', padx=18, pady=(0, 14))
         self.start_button = self.button(actions, 'Начать загрузку', self.start, primary=True, width=160)
@@ -111,8 +126,13 @@ class App(ctk.CTk):
         self.stop_button.pack(side='left')
         self.retry_button = self.button(actions, 'Повторить ошибки', self.retry, width=145, state='disabled')
         self.retry_button.pack(side='right')
-        self.log = ctk.CTkTextbox(main, height=88, fg_color=BG, text_color=MUTED, font=('Consolas', 11))
-        self.log.grid(row=4, column=0, sticky='ew', pady=(8, 0))
+        self.log_window = ctk.CTkToplevel(self)
+        self.log_window.withdraw()
+        self.log_window.title('Журнал загрузки')
+        self.log_window.geometry('760x360')
+        self.log_window.protocol('WM_DELETE_WINDOW', self.log_window.withdraw)
+        self.log = ctk.CTkTextbox(self.log_window, fg_color=BG, text_color=MUTED, font=('Consolas', 12))
+        self.log.pack(fill='both', expand=True, padx=12, pady=12)
         self.log.configure(state='disabled')
 
         side = ctk.CTkScrollableFrame(self, width=270, fg_color=CARD, corner_radius=18)
@@ -167,6 +187,28 @@ class App(ctk.CTk):
         self.log.see('end')
         self.log.configure(state='disabled')
 
+    def open_log(self):
+        self.log_window.deiconify()
+        self.log_window.lift()
+
+    def install_shortcuts(self, widget):
+        if sys.platform != 'win32':
+            return
+        if widget.winfo_class() in ('Text', 'Entry', 'TEntry', 'Spinbox'):
+            # Run before Tk's class bindings; Windows keycodes do not depend on layout.
+            widget.bindtags(('StudioShortcuts',) + widget.bindtags())
+        for child in widget.winfo_children():
+            self.install_shortcuts(child)
+
+    @staticmethod
+    def edit_shortcut(event):
+        if event.state & 0x20000:  # AltGr / Ctrl+Alt is not an editing shortcut.
+            return None
+        action = {0x56: 'Paste', 0x43: 'Copy', 0x58: 'Cut', 0x41: 'SelectAll'}.get(event.keycode)
+        if action:
+            event.widget.event_generate('<<' + action + '>>')
+            return 'break'
+
     def paste(self):
         try:
             self.urls.insert('end', self.clipboard_get().strip() + '\n')
@@ -209,6 +251,16 @@ class App(ctk.CTk):
         self.empty.pack(pady=35)
         self.count.configure(text='Очередь  ·  0')
         self.retry_button.configure(state='disabled')
+        self.overall.configure(text='Прогресс песен')
+        self.totals.configure(text='Скачано: 0  ·  Уже были: 0  ·  Ошибки: 0')
+        self.overall_bar.set(0)
+        self.set_file_progress(0)
+        self.last_overall = None
+        self.current_track = ''
+        self.detail.configure(text='Добавь ссылки для новой загрузки.')
+        self.transfer.configure(text='Процент относится к текущему файлу.')
+        self.phase = 'Готов к загрузке'
+        self.show_phase()
 
     def settings(self):
         return {'folder': self.folder.get().strip() or str(DEFAULT_DOWNLOADS),
@@ -239,7 +291,12 @@ class App(ctk.CTk):
         self.thread = threading.Thread(target=self.worker.run, daemon=True)
         self.failed = []
         self.set_busy(True)
-        self.bar.set(0)
+        self.set_file_progress(0)
+        self.overall_bar.set(0)
+        self.last_overall = None
+        self.current_track = ''
+        self.phase = 'Подготовка…'
+        self.show_phase()
         self.thread.start()
 
     def set_busy(self, busy):
@@ -257,6 +314,7 @@ class App(ctk.CTk):
         else:
             self.worker.resume.set()
             self.pause_button.configure(text='Пауза')
+            self.show_phase()
 
     def stop(self):
         if self.worker:
@@ -269,6 +327,40 @@ class App(ctk.CTk):
     def retry(self):
         self.start(list(self.failed))
 
+    def set_file_progress(self, fraction):
+        self.bar.stop()
+        if fraction is None:
+            self.bar.configure(mode='indeterminate')
+            self.bar.start()
+        else:
+            self.bar.configure(mode='determinate')
+            self.bar.set(min(1, max(0, fraction)))
+
+    def show_phase(self):
+        if self.worker and (self.worker.stop.is_set() or not self.worker.resume.is_set()):
+            return
+        self.status.configure(text=(self.current_track + ' · ' if self.current_track else '') + self.phase)
+
+    def show_overall(self, value):
+        self.last_overall = value
+        total = value['total']
+        prefix = 'Плейлист' if value['playlist'] else 'Видео'
+        queue_label = f" · ссылка {value['job_index']} из {value['jobs']}" if value['jobs'] > 1 else ''
+        count = f"{value['processed']} из {total}" if total is not None else 'читаем список…'
+        self.overall.configure(text=f'{prefix} · {count}{queue_label}')
+        self.totals.configure(text=f"Скачано: {value['saved']}  ·  Уже были: {value['skipped']}  ·  Ошибки: {value['errors']}")
+        self.overall_bar.set(value['processed'] / total if total else 0)
+        self.current_track = f"Песня {value['current']} из {total}" if value['current'] else ''
+        if value['job_id'] in self.rows:
+            self.rows[value['job_id']][1].configure(text=f"{prefix} · {count} · скачано {value['saved']} · ошибок {value['errors']}")
+
+    @staticmethod
+    def duration(seconds):
+        seconds = max(0, int(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes}:{seconds:02}'
+
     def poll(self):
         try:
             while True:
@@ -280,13 +372,27 @@ class App(ctk.CTk):
                 elif kind == 'status':
                     if self.worker and not self.worker.stop.is_set():
                         self.status.configure(text=value)
+                elif kind == 'overall':
+                    self.show_overall(value)
+                elif kind == 'title':
+                    self.detail.configure(text=value[:69] + '…' if len(value) > 72 else value)
+                elif kind == 'phase':
+                    self.phase = value
+                    self.show_phase()
+                    processing = value in ('Обработка аудио…', 'Преобразование аудио…', 'Запись метаданных…', 'Добавление обложки…')
+                    waiting = value in ('Чтение списка песен…', 'Подготовка…', 'Получение информации о песне…')
+                    self.set_file_progress(None if processing or waiting else 1 if value == 'Сохранено' else 0)
+                    self.transfer.configure(text='Файл скачан. Завершаем сохранение…' if processing else value)
                 elif kind == 'progress':
-                    self.bar.set(min(1, max(0, value['fraction'])))
-                    title = value['title']
-                    self.detail.configure(text=(title[:62] + '…') if len(title) > 65 else title)
-                    if self.worker.resume.is_set() and not self.worker.stop.is_set():
-                        eta = f"{value['eta']} с" if value['eta'] is not None else '—'
-                        self.status.configure(text=f"Загрузка · {value['fraction']:.0%}  /  {value['speed'] / 1048576:.1f} МБ/с  /  осталось {eta}")
+                    self.set_file_progress(value['fraction'])
+                    percent = f"{min(1, value['fraction']):.0%}" if value['fraction'] is not None else 'размер неизвестен'
+                    self.phase = 'Скачивание · ' + percent
+                    self.show_phase()
+                    size = f"{value['downloaded'] / 1048576:.1f} МБ"
+                    if value['total']:
+                        size += f" из {'≈' if value['estimated'] else ''}{value['total'] / 1048576:.1f} МБ"
+                    eta = self.duration(value['eta']) if value['eta'] is not None else '—'
+                    self.transfer.configure(text=f"{size}  ·  {value['speed'] / 1048576:.1f} МБ/с  ·  осталось на файл {eta}")
                 elif kind == 'track':
                     self.write_log('Сохранено: ' + value)
                 elif kind == 'done':
@@ -310,9 +416,9 @@ class App(ctk.CTk):
         self.failed = result['failed']
         self.set_busy(False)
         title = 'Остановлено' if result['stopped'] else ('Завершено с ошибками' if result['errors'] else 'Готово')
-        self.status.configure(text=f"{title} · сохранено треков: {result['completed']} · ошибок ссылок: {result['errors']}")
-        if not result['errors'] and not result['stopped']:
-            self.bar.set(1)
+        self.status.configure(text=title)
+        self.transfer.configure(text=f"Всего скачано: {result['completed']}  ·  Уже были: {result.get('skipped', 0)}  ·  Ссылок с ошибками: {result['errors']}")
+        self.bar.stop()
 
     def choose_folder(self):
         value = filedialog.askdirectory()
