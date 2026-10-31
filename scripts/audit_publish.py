@@ -16,6 +16,8 @@ ALLOWED = {
     'scripts/fetch_zapret.ps1',
     'tests/test_publish.py',
     'scripts/package_preview.py', 'QA.md',
+    '.github/workflows/release.yml', 'scripts/package_release.py', 'RELEASE_NOTES.md', 'LICENSE',
+    'release.json',
 }
 PATTERNS = [
     rb'gh[pousr]_[A-Za-z0-9]{20,}', rb'github_pat_[A-Za-z0-9_]{20,}',

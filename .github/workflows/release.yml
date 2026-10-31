@@ -1,0 +1,33 @@
+name: Build preview release
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release.yml', 'scripts/package_release.py']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.2'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: powershell -NoProfile -File tests/test_installer.ps1
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --windowed --onedir --name YouTubeMP3 --collect-all customtkinter --collect-all yt_dlp_ejs app.py
+      - name: Build login helper
+        run: python -m PyInstaller --noconfirm --console --onedir --name LoginHelper --collect-all webview login_helper.py
+      - name: Package application and license notices
+        run: |
+          Copy-Item dist/LoginHelper/LoginHelper.exe dist/YouTubeMP3/
+          Copy-Item dist/LoginHelper/_internal/* dist/YouTubeMP3/_internal/ -Recurse -Force
+          python scripts/package_release.py
+      - name: Publish preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v4.0.0-preview.1 release/YouTubeMP3-windows-x64.zip release/SHA256SUMS.txt release/mutagen-source.tar.gz --target ${{ github.sha }} --prerelease --title "YouTube MP3 Studio 4.0 preview 1" --notes-file RELEASE_NOTES.md

@@ -12,12 +12,14 @@ New-Item -ItemType Directory -Path $source | Out-Null
 foreach ($name in @('YouTubeMP3.exe', 'LoginHelper.exe', 'ffmpeg.exe', 'ffprobe.exe', 'node.exe')) {
     Set-Content -LiteralPath (Join-Path $source $name) -Value 'TEST FIXTURE - NOT EXECUTABLE'
 }
+New-Item -ItemType Directory -Path (Join-Path $source 'zapret') | Out-Null
+Set-Content -LiteralPath (Join-Path $source 'zapret/service.bat') -Value 'TEST FIXTURE'
 $global:youtubeInstallerTest_fixture = Join-Path $testRoot 'fixture.zip'
 Compress-Archive -Path (Join-Path $source '*') -DestinationPath $global:youtubeInstallerTest_fixture
 $global:youtubeInstallerTest_hash = (Get-FileHash -LiteralPath $global:youtubeInstallerTest_fixture -Algorithm SHA256).Hash
 function Invoke-RestMethod {
     param($Uri, $Headers)
-    if ($Uri -like '*/releases/latest') {
+    if ($Uri -like '*/release.json') {
         return @{ tag_name = $global:youtubeInstallerTest_tag; assets = @(
             @{ name='YouTubeMP3-windows-x64.zip'; browser_download_url='https://github.com/Ixtron/youtube-mp3-studio/releases/download/test/archive.zip' },
             @{ name='SHA256SUMS.txt'; browser_download_url='https://github.com/Ixtron/youtube-mp3-studio/releases/download/test/SHA256SUMS.txt' }

@@ -11,8 +11,8 @@
     $repository = 'Ixtron/youtube-mp3-studio'
     $base = Join-Path $env:LOCALAPPDATA 'YouTubeMP3'
     $headers = @{ 'User-Agent' = 'YouTubeMP3-Installer'; Accept = 'application/vnd.github+json' }
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repository/releases/latest" -Headers $headers
-    if ($release.tag_name -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release version.' }
+    $release = Invoke-RestMethod "https://raw.githubusercontent.com/$repository/main/release.json" -Headers $headers
+    if ($release.tag_name -notmatch '^v\d+\.\d+\.\d+(-preview\.\d+)?$') { throw 'Invalid release version.' }
     $assetName = 'YouTubeMP3-windows-x64.zip'
     $zipAsset = @($release.assets | Where-Object name -eq $assetName)
     $hashAsset = @($release.assets | Where-Object name -eq 'SHA256SUMS.txt')
@@ -38,6 +38,35 @@
             }
             $unpacked = Join-Path $staging 'unpacked'
             Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
+            function Get-VerifiedComponent($Url, $Hash, $Name) {
+                $destination = Join-Path $staging $Name
+                Write-Host "Downloading $Name ..."
+                Invoke-WebRequest $Url -OutFile $destination -UseBasicParsing
+                if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $Hash) {
+                    throw "Component checksum mismatch: $Name. Nothing was launched."
+                }
+                return $destination
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'node.exe'))) {
+                $node = Get-VerifiedComponent 'https://nodejs.org/dist/v25.5.0/win-x64/node.exe' 'd7f55cbc1b1ca9cc2815d7b8c58f94e4822a68cdf5ca55b4f2c9625581b92839' 'node.exe'
+                Copy-Item -LiteralPath $node -Destination $unpacked
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'ffmpeg.exe')) -or -not (Test-Path -LiteralPath (Join-Path $unpacked 'ffprobe.exe'))) {
+                $ffmpeg = Get-VerifiedComponent 'https://github.com/GyanD/codexffmpeg/releases/download/2026-03-05-git-74cfcd1c69/ffmpeg-2026-03-05-git-74cfcd1c69-full_build.zip' '7df56acc4432fa2a40469ad013476a6f95d518dc0e50593e5970dd0d9ff31c8e' 'ffmpeg.zip'
+                $ffmpegStage = Join-Path $staging 'ffmpeg'
+                Expand-Archive -LiteralPath $ffmpeg -DestinationPath $ffmpegStage
+                $ffmpegRoot = Join-Path $ffmpegStage 'ffmpeg-2026-03-05-git-74cfcd1c69-full_build'
+                Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'bin/ffmpeg.exe'), (Join-Path $ffmpegRoot 'bin/ffprobe.exe') -Destination $unpacked
+                $ffmpegLicense = Join-Path $unpacked 'licenses/ffmpeg'
+                New-Item -ItemType Directory -Path $ffmpegLicense -Force | Out-Null
+                Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'LICENSE'), (Join-Path $ffmpegRoot 'README.txt') -Destination $ffmpegLicense
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'zapret/service.bat'))) {
+                $zapret = Get-VerifiedComponent 'https://github.com/Flowseal/zapret-discord-youtube/releases/download/1.10.4/zapret-discord-youtube-1.10.4.zip' '291af673bd0238506f9548e0e94ca0abf244000f4c9a06960544fb01c5f97b34' 'zapret.zip'
+                $zapretStage = Join-Path $staging 'zapret'
+                Expand-Archive -LiteralPath $zapret -DestinationPath $zapretStage
+                Copy-Item -LiteralPath (Join-Path $zapretStage 'zapret-discord-youtube-1.10.4') -Destination (Join-Path $unpacked 'zapret') -Recurse
+            }
             foreach ($name in @('YouTubeMP3.exe', 'ffmpeg.exe', 'ffprobe.exe', 'node.exe', 'LoginHelper.exe')) {
                 if (-not (Test-Path -LiteralPath (Join-Path $unpacked $name))) { throw "Missing $name" }
             }

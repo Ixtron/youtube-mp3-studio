@@ -1,0 +1,13 @@
+{
+  "tag_name": "v4.0.0-preview.1",
+  "assets": [
+    {
+      "name": "YouTubeMP3-windows-x64.zip",
+      "browser_download_url": "https://github.com/Ixtron/youtube-mp3-studio/releases/download/v4.0.0-preview.1/YouTubeMP3-windows-x64.zip"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "browser_download_url": "https://github.com/Ixtron/youtube-mp3-studio/releases/download/v4.0.0-preview.1/SHA256SUMS.txt"
+    }
+  ]
+}
