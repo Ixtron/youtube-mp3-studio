@@ -1,6 +1,7 @@
 # Bootstrap for the public, reviewed Windows x64 release. No elevation required.
 & {
     $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
         throw 'This release requires 64-bit Windows.'
     }
